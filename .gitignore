@@ -8,3 +8,6 @@ venv/
 .env.*
 *paper_journal*.csv
 *paper_journal*.json
+marketlens_paper.db
+marketlens_paper.db-*
+*.sqlite

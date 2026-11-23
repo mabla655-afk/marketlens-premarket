@@ -1,0 +1,27 @@
+name: Paper-only market simulation
+on:
+  schedule:
+    # UTC 12:00-22:55 on weekdays covers 9 AM-4 PM ET, both DST and standard.
+    # Cron may run late or be skipped; it is not suitable for real-money execution.
+    - cron: '*/5 12-22 * * 1-5'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: marketlens-paper-sim
+  cancel-in-progress: false
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - run: pip install -r requirements.txt
+      - run: python run_scheduled.py
+        env:
+          MARKETLENS_DATABASE_URL: ${{ secrets.MARKETLENS_DATABASE_URL }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}

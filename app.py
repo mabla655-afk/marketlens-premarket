@@ -18,8 +18,36 @@ from book_strategies import (STRATEGY_LIBRARY, book_gapper_screen, anchored_vwap
 from data_source import fetch_many, parse_symbols, fetch_history_5m, discover_candidate_universe
 from morning_brief import morning_candidate, simulation_plan, simulate_exit_watch
 from paper_signals import paper_signal, SIGNAL_BUY, SIGNAL_SELL, SIGNAL_WAIT, SIGNAL_UNAVAILABLE
+from auto_dashboard import show_auto_tab
+from auto_store import is_cloud_database
+from market_scanner import discover_massive, massive_key
 
 st.set_page_config(page_title="MarketLens | Premarket Lab", page_icon="📈", layout="wide")
+
+# A shared cloud database represents a single virtual account. Protect the UI;
+# never expose DATABASE_URL or any market-data API key in GitHub.
+if is_cloud_database():
+    import os
+    expected = os.environ.get('MARKETLENS_APP_PASSWORD','')
+    if not expected:
+        try:
+            expected=str(st.secrets.get('MARKETLENS_APP_PASSWORD',''))
+        except Exception:
+            pass
+    if not expected:
+        st.error('Cloud database protection is not configured. Set MARKETLENS_APP_PASSWORD in Streamlit Secrets.')
+        st.stop()
+    import hmac
+    if not st.session_state.get('_marketlens_authorized'):
+        st.title('🔒 MarketLens — private paper account')
+        pwd = st.text_input('App access password',type='password')
+        if st.button('Unlock') and hmac.compare_digest(pwd,expected):
+            st.session_state['_marketlens_authorized']=True
+            st.rerun()
+        elif pwd:
+            st.warning('Enter the correct password and click Unlock.')
+        st.stop()
+
 
 st.markdown("""
 <style>
@@ -122,7 +150,7 @@ def draw_intraday(intraday, prev_close):
 
 now = datetime.now(ET)
 st.title("☀️ MarketLens — Morning Trading Research")
-st.caption("v0.4 · Simple morning briefing + simulated trading plans · Andrew Aziz / Bear Bull Traders inspired research · No real orders")
+st.caption("v0.5 · Automatic PAPER simulation + morning briefing · Book-based educational research · No real orders")
 
 with st.sidebar:
     st.header("Morning setup")
@@ -160,8 +188,23 @@ with st.sidebar:
     st.caption("Book screening criteria are historical methods, not validated predictions. Paper research only.")
 try:
     personal_symbols = parse_symbols(raw_tickers)
-    discovery = discover_candidate_universe() if auto_discovery else {"symbols": [], "errors": [], "explanation": "Off"}
+    if auto_discovery and massive_key() and 4 <= now.hour < 10 and now.time() < pd.Timestamp('09:30').time():
+        discovery = discover_massive(now.replace(minute=(now.minute//5)*5,second=0,microsecond=0))
+        discovery['explanation'] = discovery['source']
+    else:
+        discovery = discover_candidate_universe() if auto_discovery else {"symbols": [], "errors": [], "explanation": "Off"}
     symbols = list(dict.fromkeys(discovery["symbols"][:12] + personal_symbols))[:16]
+    # Always retain open-position tickers in the automatic paper data feed, even
+    # if Yahoo's daily discovery shortlist changes; otherwise exits are missed.
+    try:
+        from auto_store import load_state, get_engine
+        saved_auto = load_state(get_engine())
+        held = list(saved_auto.get('positions', {})) if saved_auto else []
+        pending = list(saved_auto.get('pending', {})) if saved_auto else []
+        symbols = list(dict.fromkeys(held + pending + symbols))[:16]
+    except Exception:
+        pass  # Account tab will show database diagnostics.
+
 except ValueError as exc:
     st.error(str(exc))
     st.stop()
@@ -199,14 +242,18 @@ if "paper_journal" not in st.session_state:
 if "paper_positions" not in st.session_state:
     st.session_state["paper_positions"] = {}
 
-brief_tab, research_tab = st.tabs(["☀️ MORNING BRIEF", "🔬 FULL RESEARCH"])
+auto_tab, brief_tab, research_tab = st.tabs(["🤖 AUTO PAPER SIM", "☀️ MORNING BRIEF", "🔬 FULL RESEARCH"])
+
+with auto_tab:
+    show_auto_tab(now,status,results,summaries)
+
 
 with brief_tab:
     st.subheader("Your morning briefing")
     st.caption("Research watchlist + a hypothetical plan. The app does not place trades or predict future prices.")
     if auto_discovery:
-        st.caption(f"Auto-discovery: {len(discovery['symbols'])} tickers from Yahoo's general market screeners (NOT a dedicated premarket scanner). "
-                   "Only currently observed premarket bars can qualify for today's watch list.")
+        st.caption(f"Auto-discovery: {len(discovery['symbols'])} candidate tickers. {discovery.get('explanation','')} "
+                   "Every candidate is checked again using 5-minute Yahoo bars; prices from different feeds may not agree. Without a licensed snapshot subscription this is NOT full-market coverage.")
         if discovery['errors']:
             with st.expander("Auto-discovery limitations"):
                 for err in discovery['errors']:
