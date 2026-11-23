@@ -70,3 +70,25 @@ def fetch_history_5m(symbol: str) -> dict:
         return {"bars":clean,"error":None if not clean.empty else "Provider returned no 5-minute history."}
     except Exception as exc:
         return {"bars":pd.DataFrame(),"error":str(exc)[:200]}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def discover_candidate_universe() -> dict:
+    """Yahoo's general market screeners, NOT a dedicated premarket scanner.
+
+    Use them to select candidates for a *separate* current premarket-bar check.
+    Yahoo screening results may reflect prior close/day-session prices and fail.
+    """
+    found, failures = [], []
+    for screen in ("most_actives", "day_gainers"):
+        try:
+            payload = yf.screen(screen, count=12)
+            quotes = payload.get("quotes", []) if isinstance(payload, dict) else []
+            for row in quotes:
+                symbol = row.get("symbol", "") if isinstance(row, dict) else ""
+                if symbol and SYMBOL_PATTERN.fullmatch(symbol) and symbol not in found:
+                    found.append(symbol)
+        except Exception as exc:
+            failures.append(f"{screen}: {str(exc)[:110]}")
+    return {"symbols": found[:12], "errors": failures,
+            "explanation": "Yahoo general active/gainers lists; NOT verified premarket winners."}
