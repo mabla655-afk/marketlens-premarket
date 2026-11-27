@@ -15,10 +15,15 @@ from analytics import (ET, VALID_STUDIES, add_indicators, as_et, backtest_patter
                        premarket_statistics, watch_priority)
 from book_strategies import (STRATEGY_LIBRARY, book_gapper_screen, anchored_vwap,
                              orb_marks, orb_history)
-from data_source import fetch_many, parse_symbols, fetch_history_5m, discover_candidate_universe
+from data_source import parse_symbols, discover_candidate_universe
 from morning_brief import morning_candidate, simulation_plan, simulate_exit_watch
 from paper_signals import paper_signal, SIGNAL_BUY, SIGNAL_SELL, SIGNAL_WAIT, SIGNAL_UNAVAILABLE
 from auto_dashboard import show_auto_tab
+from mic_ui import show_mic_tab
+from replay_ui import show_replay_tab
+from mic_coach import previous_session, pivot_levels
+from massive_data import fetch_many_preferred, fetch_history_preferred, fetch_massive_one
+fetch_history_5m = fetch_history_preferred
 from auto_store import is_cloud_database
 from market_scanner import discover_massive, massive_key
 
@@ -116,7 +121,7 @@ def source_table_row(symbol, item, now, is_session):
     return info
 
 
-def draw_intraday(intraday, prev_close):
+def draw_intraday(intraday, prev_close, daily=None, today=None):
     d = add_indicators(as_et(intraday)).tail(900)
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"],
@@ -141,6 +146,15 @@ def draw_intraday(intraday, prev_close):
         pass  # Keep unadjusted candlesticks visible even when annotations cannot be computed.
     if prev_close and prev_close > 0:
         fig.add_hline(y=prev_close, line_dash="dot", line_color="#a3a3a3", annotation_text="Previous close")
+    # MIC Rock pivot guide: calculated strictly from the prior completed daily
+    # candle, never from today's unfinished daily candle. Pure chart references.
+    if daily is not None and today is not None:
+        prior = previous_session(daily,today)
+        if prior is not None:
+            levels = pivot_levels(prior['high'],prior['low'],prior['close'])
+            for label, color in [('P','#fbbf24'),('R1','#fb7185'),('S1','#2dd4bf')]:
+                fig.add_hline(y=levels[label],line_dash='dashdot',line_width=1,
+                              line_color=color,annotation_text='MIC '+label)
     fig.update_layout(height=480, margin=dict(l=8, r=8, t=20, b=10),
                       xaxis_title="Eastern Time", yaxis_title="USD (unadjusted)",
                       xaxis_rangeslider_visible=False, legend=dict(orientation="h", y=1.08),
@@ -150,7 +164,7 @@ def draw_intraday(intraday, prev_close):
 
 now = datetime.now(ET)
 st.title("☀️ MarketLens — Morning Trading Research")
-st.caption("v0.5 · Automatic PAPER simulation + morning briefing · Book-based educational research · No real orders")
+st.caption("v0.8 · Morning Brief + automatic virtual simulator + interactive market replay · No real orders")
 
 with st.sidebar:
     st.header("Morning setup")
@@ -181,10 +195,12 @@ with st.sidebar:
     if st.button("Refresh provider data now", use_container_width=True):
         from data_source import fetch_one
         fetch_one.clear()
+        fetch_massive_one.clear()
+        fetch_history_preferred.clear()
         discover_candidate_universe.clear()
         st.rerun()
     st.divider()
-    st.caption("Data source: Yahoo Finance via unofficial yfinance interface. Intraday availability, completeness and delay vary. No uptime guarantee.")
+    st.caption("Data source: Massive for both discovery AND OHLCV when API key is configured; otherwise unofficial Yahoo. Starter/Developer Massive feeds are 15-minute delayed. The app suppresses stale live signals.")
     st.caption("Book screening criteria are historical methods, not validated predictions. Paper research only.")
 try:
     personal_symbols = parse_symbols(raw_tickers)
@@ -232,7 +248,7 @@ st.download_button("Save my watchlist as JSON", json.dumps(personal_symbols, ind
                    file_name="marketlens_watchlist.json", mime="application/json")
 
 with st.spinner(f"Loading market observations for {len(symbols)} ticker(s)..."):
-    results = fetch_many(symbols)
+    results = fetch_many_preferred(symbols)
 
 summaries = {s: source_table_row(s, results[s], now, is_session) for s in symbols}
 paper_ideas = {s: paper_signal(results[s]["intraday"], now, regular_session_open=(status == "Regular session")) for s in symbols}
@@ -242,10 +258,13 @@ if "paper_journal" not in st.session_state:
 if "paper_positions" not in st.session_state:
     st.session_state["paper_positions"] = {}
 
-auto_tab, brief_tab, research_tab = st.tabs(["🤖 AUTO PAPER SIM", "☀️ MORNING BRIEF", "🔬 FULL RESEARCH"])
+brief_tab, auto_tab, replay_tab, mic_tab, research_tab = st.tabs(["☀️ START HERE", "🤖 PAPER SIM", "🎞️ MARKET REPLAY", "🧭 MIC COACH", "🔬 FULL RESEARCH"])
 
 with auto_tab:
     show_auto_tab(now,status,results,summaries)
+
+with replay_tab:
+    show_replay_tab(symbols)
 
 
 with brief_tab:
@@ -253,7 +272,7 @@ with brief_tab:
     st.caption("Research watchlist + a hypothetical plan. The app does not place trades or predict future prices.")
     if auto_discovery:
         st.caption(f"Auto-discovery: {len(discovery['symbols'])} candidate tickers. {discovery.get('explanation','')} "
-                   "Every candidate is checked again using 5-minute Yahoo bars; prices from different feeds may not agree. Without a licensed snapshot subscription this is NOT full-market coverage.")
+                   "Every candidate is checked using the selected OHLCV provider. Freshness and subscription rights are checked independently; this is not a validated trading recommendation.")
         if discovery['errors']:
             with st.expander("Auto-discovery limitations"):
                 for err in discovery['errors']:
@@ -310,6 +329,19 @@ with brief_tab:
     b1.metric("Observed price", '$'+fmt_number(brief_info['last_observed_price']) if brief_info['last_observed_price'] is not None else '—')
     b2.metric("Premarket gap", fmt_number(brief_info['premarket_gap_pct'], suffix='%'))
     b3.metric("5-min paper signal", brief_idea['label'])
+    # Three immediately useful MIC research references on the beginner's home
+    # screen. Do not claim they are validated entry/exit prices.
+    previous = previous_session(results[brief_selected]['daily'], now.date())
+    if previous:
+        mic_levels = pivot_levels(previous['high'],previous['low'],previous['close'])
+        with st.expander('🧭 MIC quick guide: yesterday’s chart reference levels'):
+            lc1,lc2,lc3=st.columns(3)
+            lc1.metric('Pivot (balance reference)',f"${mic_levels['P']:.2f}")
+            lc2.metric('R1 (possible resistance)',f"${mic_levels['R1']:.2f}")
+            lc3.metric('S1 (possible support)',f"${mic_levels['S1']:.2f}")
+            st.caption(f"Calculated from the {previous['date']} completed daily candle using the supplied MIC Rock Pivot workbook. Not automatic buy/sell levels; see MIC COACH for explanations.")
+    else:
+        st.caption('MIC pivot levels: no validated prior-session OHLC available.')
     if status == 'Premarket':
         bars = results[brief_selected]['intraday']
         if not bars.empty:
@@ -393,9 +425,12 @@ with brief_tab:
             file_name='marketlens_virtual_trade_journal.csv', mime='text/csv', key='brief_journal_csv')
         st.caption("The virtual journal is temporary browser-session storage. Download it before the session resets.")
     st.divider()
-    st.caption("Market data: unofficial Yahoo/yfinance, potentially delayed, incomplete, or unavailable. "
-               "No news/catalyst verification, no exchange-wide premarket scan, no background alerts, "
-               "no guaranteed position sizes or exit outcomes, and no brokerage connection.")
+    st.caption("Market data: Massive when configured, otherwise unofficial Yahoo. Freshness and access vary by plan. "
+               "The MIC COACH tab explains float, support/resistance and manual news checks. "
+               "No live orders, guaranteed simulated fills or validated forecasts.")
+
+with mic_tab:
+    show_mic_tab(now, results, summaries, symbols)
 
 with research_tab:
     rows = []
@@ -474,7 +509,7 @@ with research_tab:
         st.info("No current-session intraday bar. The market may be closed, or the data provider may be unavailable.")
 
     if not selected_data["intraday"].empty:
-        st.plotly_chart(draw_intraday(selected_data["intraday"], stats["prior_close"]), use_container_width=True)
+        st.plotly_chart(draw_intraday(selected_data["intraday"], stats["prior_close"],selected_data["daily"],now.date()), use_container_width=True)
     else:
         st.warning("No intraday chart available for this ticker.")
 
@@ -645,4 +680,4 @@ with research_tab:
         st.caption(detail['source'])
         st.info('The book emphasizes trader discretion; software only flags observable conditions. A pattern is not a recommendation or a verified advantage.')
 
-    st.caption("MarketLens v0.4 · Derived research criteria from user-supplied books · unofficial Yahoo Finance data · paper-research only")
+    st.caption("MarketLens v0.8 · Source-specific research from BBT and MIC materials · virtual practice only · provider data may be delayed")

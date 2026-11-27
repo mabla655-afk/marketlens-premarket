@@ -12,7 +12,8 @@ import pandas as pd
 from analytics import ET
 from auto_store import get_engine, load_state, save_state, is_cloud_database
 from auto_simulator import advance_account, select_research_watch, event
-from data_source import fetch_many, discover_candidate_universe
+from data_source import discover_candidate_universe
+from massive_data import fetch_many_preferred as fetch_many
 from book_strategies import book_gapper_screen
 from analytics import premarket_statistics, watch_priority
 from market_scanner import discover_massive, massive_key

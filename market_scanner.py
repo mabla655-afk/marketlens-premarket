@@ -1,6 +1,6 @@
 """Optional broader Massive full-market premarket discovery.
 Requires a paid subscription including this endpoint. Does not place orders.
-Indicators & 5-minute simulation bars remain sourced from yfinance in v0.5.
+In v0.6 Massive powers both discovery and 5-minute OHLCV when configured.
 """
 from __future__ import annotations
 import os

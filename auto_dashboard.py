@@ -12,7 +12,17 @@ from analytics import ET
 
 def show_auto_tab(now, status, results, summaries):
     st.header('🤖 Automatic paper-trading practice')
-    st.caption('Virtual-only · No brokerage connection · No real buys or sells. Signals depend on actual observed market bars, which can be delayed or missing.')
+    st.caption('Virtual-only · No brokerage connection · No real buys or sells. This engine uses only the existing simplified long-only BBT opening-range rule; the new MIC research tab does NOT trigger automatic shorts.')
+    with st.expander('📘 Beginner guide: what do these numbers mean?', expanded=False):
+        st.markdown('''
+        **Price** is what a stock last traded for; it is not a guaranteed next price.\n\n
+        **Volume** is the number of shares traded in a period. Higher than usual volume may indicate attention, not a reliable upward move.\n\n
+        **Premarket gap** compares an observed premarket price to yesterday’s close.\n\n
+        **VWAP** is an average price weighted by trading volume, often used as a reference line.\n\n
+        **Opening-range breakout** is a chart observation after 9:35 a.m. ET, when price moves beyond the first five-minute range.\n\n
+        **Virtual shares** are calculated from the practice account's risk and exposure limits. A stop or target is only a simulated reference.
+        ''')
+        st.info('Suggested routine: 9:00 ET review the watchlist; 9:30 ET observe the open; after 9:40 ET check paper-only rules; after 4:00 ET review the journal. No number of trades is required.')
     if not is_cloud_database():
         st.warning('Local SQLite mode: paper records are saved in this app instance, but Streamlit Community Cloud can erase local files at restart. Connect external PostgreSQL before relying on lasting records or unattended scheduling.')
     else:
@@ -88,6 +98,17 @@ def show_auto_tab(now, status, results, summaries):
     c3.metric('Completed paper trades',s['closed_trades'])
     c4.metric('Realized win rate',f'{s["win_rate"]:.0f}%' if s['win_rate'] is not None else 'Not enough trades')
     st.caption('Equity uses latest observed prices, which may be stale; drawdown below uses realized closed trades only. Nothing here is a forecast.')
+    from market_scanner import massive_key
+    if massive_key():
+        st.caption('Price feed: Massive 5-minute aggregates. Data freshness is checked independently of subscription; 15-minute-delayed plans do not qualify for timely automatic entries.')
+    else:
+        st.warning('Unofficial Yahoo market data in use. This is not a professional live scanner. The simulation may skip entries or miss prices.')
+    latest_ages = [round((now-v.get('last_observed_at')).total_seconds()/60,1) for v in summaries.values() if v.get('last_observed_at') is not None]
+    if latest_ages:
+        newest=min(latest_ages)
+        st.caption(f'Newest available candle START is approximately {newest:g} minutes old. In live-like paper mode, a completed 5-minute bar must be available within 7 minutes of its END.')
+        if newest>12 and status=='Regular session':
+            st.warning('Market observations appear delayed or stale. The simulator will not open new virtual positions using old candles.')
     st.markdown('#### Today’s automatic watchlist')
     if symbols:
         st.write(', '.join('`'+x+'`' for x in symbols))
@@ -118,6 +139,16 @@ def show_auto_tab(now, status, results, summaries):
             values.append({'Time':pd.Timestamp(x['exit_at']), 'Realized-only virtual equity':balance})
         st.line_chart(pd.DataFrame(values).set_index('Time'))
         st.dataframe(pd.DataFrame(closed[::-1]),use_container_width=True,hide_index=True)
+        # Simple MIC flash-calendar-inspired practice record. No projected P/L.
+        daily = pd.DataFrame(closed)
+        dates = pd.to_datetime(daily['exit_at'], errors='coerce', utc=True)
+        daily['Date (ET)'] = dates.dt.tz_convert('America/New_York').dt.strftime('%Y-%m-%d')
+        by_day = (daily.dropna(subset=['Date (ET)']).groupby('Date (ET)')
+                   .agg(**{'Virtual P/L ($)':('pnl','sum'), 'Completed simulations':('pnl','size')})
+                   .reset_index().sort_values('Date (ET)',ascending=False))
+        with st.expander('📅 Paper practice calendar — daily closed-trade results'):
+            st.dataframe(by_day,hide_index=True,use_container_width=True)
+            st.caption('Inspired by the dated MIC trade-review calendar. Days without completed simulations do not imply any gain or loss. Older workbook calendar dates are not copied.')
         st.caption('Performance shown is after modeled slippage but before taxes, financing, realistic spread/commissions and feed latency; this is NOT a validated backtest.')
     with st.expander('Recent automatic decisions and diagnostics'):
         logs=state.get('events',[])[-30:][::-1]
@@ -125,36 +156,10 @@ def show_auto_tab(now, status, results, summaries):
             st.dataframe(pd.DataFrame(logs),hide_index=True,use_container_width=True)
         else:
             st.write('No simulated activity recorded yet.')
-        st.write('Provider uses Yahoo 5-minute bars. The hosted page refreshes about every 5 minutes when open. GitHub Actions is an optional, imperfect unattended schedule.')
+        st.write('When configured, both scanning and 5-minute bars use Massive; otherwise unofficial Yahoo. Delayed and stale bars suppress new entries. The page refreshes roughly every 5 minutes when open. GitHub Actions is an optional, imperfect unattended schedule.')
     st.download_button('Export paper account backup (JSON)',export_state(state),file_name='marketlens_paper_account_backup.json',mime='application/json')
     st.download_button('Export completed virtual trades (CSV)',pd.DataFrame(closed).to_csv(index=False),file_name='marketlens_virtual_trades.csv',mime='text/csv')
     st.divider()
-    with st.expander('Historical market replay — separate from your live virtual account'):
-        st.caption('Practice past market sessions without seeing future candles, then compare strategy outcomes. Choosing a stock/date in hindsight introduces selection bias.')
-        tickers=list(results)
-        chosen=st.selectbox('Replay a currently watched ticker',tickers,key='auto_replay_ticker') if tickers else None
-        if chosen and st.button('Load recent 5-minute history and replay yesterday/most recent session'):
-            from data_source import fetch_history_5m
-            with st.spinner('Fetching historical candles...'):
-                fetched=fetch_history_5m(chosen)
-            bars=fetched['bars']
-            if bars.empty:
-                st.error('Replay data unavailable: '+str(fetched.get('error')))
-            else:
-                from analytics import as_et
-                x=as_et(bars)
-                previous=sorted(set(d for d in x.index.date if d < now.date()))
-                if not previous:
-                    st.warning('No previous trading session is available in the downloaded data.')
-                else:
-                    sim=replay_one_day(x,chosen,previous[-1])
-                    out=stats(sim)
-                    st.write('Replay date:',str(previous[-1]),' · Simulated closed trades:',out['closed_trades'],
-                             ' · Hypothetical realized P/L:',f'${out["realized_pnl"]:,.2f}')
-                    if sim['closed_trades']:
-                        st.dataframe(pd.DataFrame(sim['closed_trades']),hide_index=True,use_container_width=True)
-                    else:
-                        st.info('No qualifying signals produced virtual trades in this replay.')
     with st.expander('Advanced risk assumptions'):
         st.caption('These are virtual safeguards, not guaranteed limits. All order prices are synthetic.')
         st.json(state['settings'])

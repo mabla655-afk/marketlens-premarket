@@ -7,6 +7,10 @@ Stops win ties against targets. A missing or delayed candle suppresses entries.
 from __future__ import annotations
 from datetime import datetime, date, time, timedelta
 from math import floor
+
+# Live-like paper entries require nearly current completed data.
+# Fifteen-minute-delayed feeds are for replay, not synthetic retroactive fills.
+MAX_LIVE_BAR_AGE_SECONDS = 420
 from zoneinfo import ZoneInfo
 import pandas as pd
 from analytics import as_et, tidy_ohlcv
@@ -160,7 +164,7 @@ def advance_account(state: dict, bars_by_symbol: dict, now: datetime, check_sign
         if pending and symbol not in state['positions']:
             signal_time = datetime.fromisoformat(pending['signal_end'])
             # Only execute on *immediate* next 5m bar and within 15m of NOW.
-            if (start.to_pydatetime() == signal_time and (now-end).total_seconds() <= 900 and
+            if (start.to_pydatetime() == signal_time and (now-end).total_seconds() <= MAX_LIVE_BAR_AGE_SECONDS and
                     symbol in watch and time(9,40)<=start.time()<time(11,30) and contiguous and
                     not _daily_loss_exceeded(state,day) and not _symbol_traded_today(state,symbol,day) and _today_count(state,day)<state['settings']['max_trades_day'] and
                     len(state['positions']) < state['settings']['max_positions']):
@@ -188,7 +192,7 @@ def advance_account(state: dict, bars_by_symbol: dict, now: datetime, check_sign
             continue
         if not time(9,40) <= end.time() <= time(11,25):
             continue
-        if not contiguous or (now-end).total_seconds() > 900:
+        if not contiguous or (now-end).total_seconds() > MAX_LIVE_BAR_AGE_SECONDS:
             continue
         if _symbol_traded_today(state,symbol,day) or _daily_loss_exceeded(state,day) or _today_count(state,day) >= state['settings']['max_trades_day']:
             continue

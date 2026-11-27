@@ -39,7 +39,7 @@ def _same_time_volume_baseline(regular: pd.DataFrame, day, bar_time: time) -> fl
 
 
 def paper_signal(intraday: pd.DataFrame, now: datetime, regular_session_open: bool,
-                 min_relative_volume: float = 1.2, max_bar_lag_minutes: int = 20) -> dict:
+                 min_relative_volume: float = 1.2, max_bar_lag_minutes: int = 7) -> dict:
     """Signal from *completed* 5-min regular-session bars only.
 
     Last bar time is candle START and result bar_end is start+5 min.
